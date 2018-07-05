@@ -1,0 +1,126 @@
+# packages
+require(rvest)
+require(twitteR)
+require(stringr)
+require(XML)
+require(dplyr)
+library(ggplot2)
+
+# do twitter auth
+consumer_key = ""
+consumer_secret = ""
+access_token = ""
+access_secret = ""
+
+setup_twitter_oauth(consumer_key, 
+                    consumer_secret, 
+                    access_token, 
+                    access_secret)
+
+# where to scrape
+url = 'http://suche.transparenz.hamburg.de/?type=dataset'
+
+# get date
+check = url %>%
+  html() %>%
+  html_nodes("span.rs_date")
+
+mydata = as.data.frame(html_text(check))
+colnames(mydata) = "date"
+
+# add titel
+check = url %>%
+  html() %>%
+  html_nodes("li.rs_headline") %>%
+  html_nodes("h3")
+
+check = as.data.frame(html_text(check))
+colnames(check) = "titel"
+
+mydata$titel = check$titel
+
+# add about
+check = url %>%
+  html() %>%
+  html_nodes("li.rs_headline") %>%
+  html_nodes("h4")
+
+check = as.data.frame(html_text(check))
+colnames(check) = "about"
+
+mydata$about = check$about
+
+# add type
+check = url %>%
+  html() %>%
+  html_nodes("div.rs_infotype")
+
+check = as.data.frame(html_text(check))
+colnames(check) = "type"
+
+mydata$type = check$type
+
+# add link
+check <- htmlParse(url)
+check <- xpathSApply(check, "//a/@href")
+check = as.data.frame(check)
+colnames(check) = "check"
+check = dplyr::filter(check, grepl("/dataset/", check))
+check = as.data.frame(check[seq(1, nrow(check), 3), ])
+colnames(check) = "check"
+check$check = paste("http://suche.transparenz.hamburg.de", check$check, sep = "")
+
+mydata$link = check$check
+mydata$link = gsub("?forceWeb=true","", mydata$link)
+mydata$link = gsub("http://","", mydata$link)
+mydata$link = gsub("\\?","", mydata$link)
+
+# regex
+mydata = mydata %>%
+  mutate_all(as.character) %>%
+  mutate_all(trimws) %>%
+  mutate_all(str_squish) %>%
+  mutate_all(funs(gsub("\n","", .)))
+
+# format date
+mydata$date = as.Date(mydata$date, "%d.%m.%Y")
+
+# format string
+mydata$type = gsub("Informationsgegenstand","Gegenstand", mydata$type)
+mydata$type = gsub(", mehr Geodaten","", mydata$type)
+
+# read in date from last tweet
+setwd("C:/Users/akruse/Documents/projects/marathon/twitter_bot_opendata/")
+date = read.table("date.csv", header = T)
+date$x = as.character(date$x)
+date$x = as.Date(date$x, "%Y-%m-%d")
+
+# build routine if tweet is necesary
+mydata = mydata[mydata$date > date["x"], ]
+n = nrow(mydata)
+
+# send a tweet
+for (i in 1:n) {
+  
+  # chosse dataset to tweet about
+  msg = mydata[i,]
+  
+  # add image with description of data
+  text = paste(gsub('(.{1,40})(\\s|$)', '\\1\n', msg$about))
+  
+  p = ggplot() + 
+    annotate("text", x = 4, y = 25, size=8, label = paste("Beschreibung: \n \n",text)) + 
+    theme_void()
+  
+  ggsave("image.jpg", p)
+  
+  # send tweet
+  tweet(paste("Neuer Datensatz! ", msg$type, ", Titel: ", msg$titel, " ", msg$link, " #opendata #hamburg", sep = ""), bypassCharLimit = T, mediaPath = "image.jpg")
+  
+  # wait a bit
+  Sys.sleep(10)
+}
+
+# write newest date to file
+date = max(mydata$date)
+write.table(date, "date.csv", row.names = F)
